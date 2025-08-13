@@ -1,0 +1,12 @@
+Problem (unicode1): Understanding Unicode
+
+    a. The Unicode character for chr(0) is the NULL character (U+0000).
+    b. Its string representation (__repr__()) is shown as '\x00', while its printed representation appears blank because it is a non-printable control character.
+    c. When this character occurs in text, '\x00' becomes part of the string and affects its length, but it is not visibly displayed when printed.
+
+Problem (unicode2): Unicode Encodings
+
+    a. UTF-8 is preferred because it is more space-efficient for common characters, produces shorter byte sequences than UTF-16/UTF-32 for most text, and is the dominant encoding on the web, ensuring compatibility.
+    b. It decodes each byte individually instead of as a multi-byte sequence, which breaks characters that require multiple bytes in UTF-8, such as 'é' (b'\xc3\xa9'), leading to incorrect output.
+    c. b'\xc3\x28'. Here, 0xC3 starts a multi-byte UTF-8 sequence, but 0x28 is not a valid continuation byte, so it cannot be decoded into any Unicode character.
+    
