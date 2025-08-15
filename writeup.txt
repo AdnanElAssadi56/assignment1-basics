@@ -10,3 +10,9 @@ Problem (unicode2): Unicode Encodings
     b. It decodes each byte individually instead of as a multi-byte sequence, which breaks characters that require multiple bytes in UTF-8, such as 'é' (b'\xc3\xa9'), leading to incorrect output.
     c. b'\xc3\x28'. Here, 0xC3 starts a multi-byte UTF-8 sequence, but 0x28 is not a valid continuation byte, so it cannot be decoded into any Unicode character.
     
+Problem (train_bpe_tinystories):
+
+    a. Training took 7.9 minutes (≈471 seconds) and used ~94.6 MB RAM. The longest token is length 15; it appears to be "b' accomplishment'" in bytes, which makes sense given frequent its frequenent occurences in TinyStories.
+    b. Profiling shows pretokenization dominates, with pair selection second. The bottleneck is the regex processing and chunk handling during pretokenization, which takes the majority of training time.
+
+Problem (train_bpe_expts_owt):
