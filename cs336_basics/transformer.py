@@ -253,7 +253,7 @@ class TransformerLM(nn.Module):
         self.token_embeddings = Embedding(vocab_size, d_model, device, dtype)
         self.layers = nn.ModuleList()
         for i in range(num_layers):
-            self.layers.append(TransformerBlock(d_model, num_heads, d_ff, max_seq_len=self.max_seq_len, theta=theta))
+            self.layers.append(TransformerBlock(d_model, num_heads, d_ff, max_seq_len=self.max_seq_len, theta=theta, device=self.device))
 
         self.ln_final = RMSNorm(d_model, eps=1e-5, device=self.device, dtype=self.dtype)
         self.lm_head = Linear(d_model, vocab_size, device, dtype)
