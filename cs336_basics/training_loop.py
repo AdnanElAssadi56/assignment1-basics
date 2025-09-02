@@ -86,20 +86,20 @@ def parse_args():
     parser.add_argument("--num_layers", type=int, default=4)
     parser.add_argument("--d_ff", type=int, default=1344)
     parser.add_argument("--rope_theta", type=float, default=10000.0)
-    parser.add_argument("--max_seq_len", type=int, default=256)
 
     # training and optimizer params
-    parser.add_argument("--learning_rate", type=float, default=1e-4)
+    parser.add_argument("--use_lr_schedule", action="store_true", help="Use cosine learning rate schedule")
+    parser.add_argument("--learning_rate", type=float, default=1e-4, help="Fixed learning rate (used when --use_lr_schedule is not set)")
+    parser.add_argument("--max_lr", type=float, default=5e-3, help="Maximum learning rate for cosine schedule")
+    parser.add_argument("--min_lr", type=float, default=1e-5, help="Minimum learning rate for cosine schedule")
+    parser.add_argument("--warmup_steps", type=int, default=2000, help="Warmup steps for cosine schedule")
     parser.add_argument("--weight_decay", type=float, default=0.1)
     parser.add_argument("--epsilon", type=float, default=1e-8)
     parser.add_argument("--beta1", type=float, default=0.9)
     parser.add_argument("--beta2", type=float, default=0.95)
     parser.add_argument("--gradient_clip_M", type=float, default=5.0)
-    parser.add_argument("--min_lr", type=float, default=1e-5)
-    parser.add_argument("--max_lr", type=float, default=5e-3)
     parser.add_argument("--max_steps", type=int, default=10000)
-    parser.add_argument("--min_loss_threshold", type=float, default=2.0) 
-    parser.add_argument("--warmup_steps", type=int, default=2000)
+    parser.add_argument("--min_loss_threshold", type=float, default=2.0)
 
     # logging and checkpointing
     parser.add_argument("--checkpoint_dir", type=str, default="outputs/checkpoints")
@@ -190,6 +190,13 @@ def main(args=None):
     
     # load tokenizer from files
     tokenizer = Tokenizer.from_files(args.vocab_path, args.merges_path, special_tokens=args.special_tokens)
+    
+    # Validate vocab size consistency
+    actual_vocab_size = len(tokenizer.vocab)
+    if actual_vocab_size != args.vocab_size:
+        print(f"WARNING: Tokenizer vocab size ({actual_vocab_size}) != args.vocab_size ({args.vocab_size})")
+        print(f"Using actual tokenizer vocab size: {actual_vocab_size}")
+        args.vocab_size = actual_vocab_size
 
 
     s = "Baseball Prospectus director of technology Harry Pavlidis took a risk when he hired Jonathan Judge.Pavlidis knew that, as Alan Schwarz wrote in The Numbers Game, “no corner of American culture is more precisely counted, more passionately quantified, than performances of baseball players.” With a few clicks here and there, you can findout that Noah Syndergaard’s fastball revolves more than 2,100 times per minute on its way to the plate, that Nelson Cruz had the game’s highest average exit velocity among qualified hitters in 2016 and myriad other tidbits that seem ripped from a video game or science fiction novel. The rising ocean of data has empowered an increasingly important actor in baseball’s culture: the analytical hobbyist."
@@ -251,7 +258,7 @@ def main(args=None):
         vocab_size=args.vocab_size,
         context_length=args.context_length,
         num_layers=args.num_layers,
-        max_seq_len=args.max_seq_len,
+        max_seq_len=args.context_length,  # Use context_length consistently
         theta=args.rope_theta,
         device=device
     )
@@ -345,16 +352,20 @@ def main(args=None):
                     'divergence_reason': 'loss_increasing'
                 }
         
-        # LR scheduling
-        lr = get_cosine_lr(
-            step,
-            args.max_lr, # alpha_max
-            args.min_lr, # alpha_min
-            args.warmup_steps, # Tw
-            args.max_steps # Tc
-        )
-        for param_group in optimizer.param_groups:
-            param_group['lr'] = lr
+        # LR scheduling - only apply if using schedule
+        if args.use_lr_schedule:
+            lr = get_cosine_lr(
+                step,
+                args.max_lr, # alpha_max
+                args.min_lr, # alpha_min
+                args.warmup_steps, # Tw
+                args.max_steps # Tc
+            )
+            for param_group in optimizer.param_groups:
+                param_group['lr'] = lr
+        else:
+            # Use fixed learning rate
+            lr = args.learning_rate
         
         # logging
         if step % args.log_freq == 0:
