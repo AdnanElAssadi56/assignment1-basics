@@ -101,6 +101,8 @@ def learning_rate_sweep_tinystories(args):
             experiment_args.append("--use_compile")
         if args.use_memmap:
             experiment_args.append("--use_memmap")
+        if args.reuse_pretokens:
+            experiment_args.append("--reuse_pretokens")
         
         run_training_loop(experiment_args, run_name)
 
@@ -139,6 +141,8 @@ def batch_size_sweep_tinystories(args):
             experiment_args.append("--use_compile")
         if args.use_memmap:
             experiment_args.append("--use_memmap")
+        if args.reuse_pretokens:
+            experiment_args.append("--reuse_pretokens")
         
         run_training_loop(experiment_args, run_name)
 
@@ -146,18 +150,14 @@ def batch_size_sweep_tinystories(args):
 # --- Ablation Experiments (Require manual code modification in transformer.py) ---
 
 def rmsnorm_ablation_tinystories(args):
-    """Runs training with RMSNorm removed."""
-    print("\n!!! MANUAL ACTION REQUIRED !!!")
-    print("Please go to 'assignment1-basics/cs336_basics/transformer.py' and COMMENT OUT the RMSNorm layers in 'TransformerBlock'.")
-    print("Specifically, comment out or remove lines like: `self.ln1 = RMSNorm(...)` and `self.ln2 = RMSNorm(...)`")
-    print("And modify `forward` method from `h = self.ln1(x)` to `h = x` (and similarly for `ln2`).")
-    input("Press Enter to continue after modifying transformer.py...")
-
-    optimal_lr = args.learning_rate # Start with optimal LR, be prepared to lower it if diverges
-
-    # Run with previous optimal LR
-    run_name_optimal_lr = "TinyStories_NoRMSNorm_Optimal_LR"
-    experiment_args_optimal_lr = [
+    """Runs training with RMSNorm removed using architecture flags."""
+    print("--- Running RMSNorm Ablation on TinyStories ---")
+    
+    # Try optimal LR first
+    optimal_lr = args.learning_rate
+    run_name_optimal = "TinyStories_NoRMSNorm_Optimal_LR"
+    experiment_args_optimal = [
+        "--remove_layer_norm",  # Use the new architecture flag
         f"--learning_rate={optimal_lr}",
         f"--max_steps={args.max_steps}",
         f"--batch_size={args.batch_size}",
@@ -174,44 +174,35 @@ def rmsnorm_ablation_tinystories(args):
         f"--checkpoint_freq={args.checkpoint_freq}",
         f"--warmup_steps={args.warmup_steps}",
     ]
-    if args.use_wandb: experiment_args_optimal_lr.append("--use_wandb")
-    if args.use_compile: experiment_args_optimal_lr.append("--use_compile")
-    if args.use_memmap: experiment_args_optimal_lr.append("--use_memmap")
-
-    run_training_loop(experiment_args_optimal_lr, run_name_optimal_lr)
-
-    print("\n!!! MANUAL ACTION REQUIRED !!!")
-    print("If the previous run diverged, now try a LOWER learning rate.")
-    input("Press Enter to continue to run with lower LR (or Ctrl+C to skip)...")
+    experiment_args_optimal = add_common_flags(experiment_args_optimal, args)
     
-    lower_lr = optimal_lr / 10 # Example: try 10x lower
-    run_name_lower_lr = f"TinyStories_NoRMSNorm_Lower_LR_{lower_lr:.0e}"
-    experiment_args_lower_lr = [
-        f"--learning_rate={lower_lr}",
-        f"--max_steps={args.max_steps}",
-        f"--batch_size={args.batch_size}",
-        f"--context_length={args.context_length}",
-        f"--vocab_size={args.vocab_size}",
-        f"--d_model={args.d_model}",
-        f"--num_heads={args.num_heads}",
-        f"--num_layers={args.num_layers}",
-        f"--d_ff={args.d_ff}",
-        f"--rope_theta={args.rope_theta}",
-        f"--device={args.device}",
-        f"--wandb_project={args.wandb_project}",
-        f"--eval_freq={args.eval_freq}",
-        f"--checkpoint_freq={args.checkpoint_freq}",
-        f"--warmup_steps={args.warmup_steps}",
-    ]
-    if args.use_wandb: experiment_args_lower_lr.append("--use_wandb")
-    if args.use_compile: experiment_args_lower_lr.append("--use_compile")
-    if args.use_memmap: experiment_args_lower_lr.append("--use_memmap")
+    result = run_training_loop(experiment_args_optimal, run_name_optimal)
     
-    run_training_loop(experiment_args_lower_lr, run_name_lower_lr)
-
-    print("\n!!! IMPORTANT: MANUAL ACTION REQUIRED !!!")
-    print("Please REVERT the changes to 'assignment1-basics/cs336_basics/transformer.py' (re-enable RMSNorm) before proceeding to other experiments.")
-    input("Press Enter after reverting changes...")
+    # If it failed (likely diverged), try lower LR
+    if result != 0:
+        print("Optimal LR failed, trying lower learning rate...")
+        lower_lr = optimal_lr / 10
+        run_name_lower = f"TinyStories_NoRMSNorm_Lower_LR_{lower_lr:.0e}"
+        experiment_args_lower = [
+            "--remove_layer_norm",
+            f"--learning_rate={lower_lr}",
+            f"--max_steps={args.max_steps}",
+            f"--batch_size={args.batch_size}",
+            f"--context_length={args.context_length}",
+            f"--vocab_size={args.vocab_size}",
+            f"--d_model={args.d_model}",
+            f"--num_heads={args.num_heads}",
+            f"--num_layers={args.num_layers}",
+            f"--d_ff={args.d_ff}",
+            f"--rope_theta={args.rope_theta}",
+            f"--device={args.device}",
+            f"--wandb_project={args.wandb_project}",
+            f"--eval_freq={args.eval_freq}",
+            f"--checkpoint_freq={args.checkpoint_freq}",
+            f"--warmup_steps={args.warmup_steps}",
+        ]
+        experiment_args_lower = add_common_flags(experiment_args_lower, args)
+        run_training_loop(experiment_args_lower, run_name_lower)
 
 
 def pre_norm_ablation_tinystories(args):
@@ -294,6 +285,8 @@ def no_pos_emb_ablation_tinystories(args):
     if args.use_wandb: experiment_args.append("--use_wandb")
     if args.use_compile: experiment_args.append("--use_compile")
     if args.use_memmap: experiment_args.append("--use_memmap")
+    if args.reuse_pretokens:
+        experiment_args.append("--reuse_pretokens")
 
     run_training_loop(experiment_args, run_name)
 
@@ -395,6 +388,8 @@ def main_experiment_openwebtext(args):
         experiment_args.append("--use_compile")
     if args.use_memmap:
         experiment_args.append("--use_memmap")
+    if args.reuse_pretokens:
+        experiment_args.append("--reuse_pretokens")
 
     run_training_loop(experiment_args, "OpenWebText_Base_Model")
 
@@ -454,6 +449,8 @@ def leaderboard_experiment(args):
         experiment_args.append("--use_compile")
     if args.use_memmap:
         experiment_args.append("--use_memmap")
+    if args.reuse_pretokens:
+        experiment_args.append("--reuse_pretokens")
     
     run_training_loop(experiment_args, run_name)
 
@@ -509,6 +506,8 @@ def parse_args_for_experiments():
     parser.add_argument("--use_compile", action="store_true", help="Enable torch.compile()")
     parser.add_argument("--use_memmap", action="store_true", help="Use memory-mapped files for data loading")
     parser.add_argument("--reuse_pretokens", action="store_true", default=True, help="Reuse existing pretokenized data")
+    parser.add_argument("--pretokens_train_path", type=str, default="outputs/tinystories_train.npy")
+    parser.add_argument("--pretokens_valid_path", type=str, default="outputs/tinystories_valid.npy")
 
 
     # Specific experiment selection

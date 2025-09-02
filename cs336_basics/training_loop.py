@@ -109,8 +109,20 @@ def parse_args():
     parser.add_argument("--checkpoint_freq", type=int, default=1000)
     parser.add_argument("--save_best_only", action="store_true", help="Only save the best model checkpoint")
     parser.add_argument("--experiment_name", type=str, default=None)
+    parser.add_argument("--run_name", type=str, default=None, help="Experiment run name for tracking")
     parser.add_argument("--use_wandb", action="store_true", help="Use Weights & Biases for logging")
     parser.add_argument("--resume_from", type=str, default=None, help="Path to a checkpoint to resume training from")
+    
+    # architecture modification flags for ablations
+    parser.add_argument("--remove_layer_norm", action="store_true", help="Remove all RMSNorm layers")
+    parser.add_argument("--use_post_norm", action="store_true", help="Use post-norm instead of pre-norm")
+    parser.add_argument("--remove_rope", action="store_true", help="Remove RoPE position embeddings")
+    parser.add_argument("--use_silu_ffn", action="store_true", help="Use SiLU instead of SwiGLU in FFN")
+    
+    # dataset and experiment control
+    parser.add_argument("--dataset", type=str, default="tinystories", choices=["tinystories", "openwebtext"], help="Dataset to use")
+    parser.add_argument("--total_tokens", type=int, default=None, help="Total tokens to process (overrides max_steps calculation)")
+    parser.add_argument("--target_val_loss", type=float, default=None, help="Target validation loss for early stopping")
 
     # device and compilation
     parser.add_argument("--device", type=str, default="cuda" if torch.cuda.is_available() else "cpu")
