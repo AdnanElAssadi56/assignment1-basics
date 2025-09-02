@@ -11,7 +11,7 @@ from .data_loader import data_loader
 from .tokenizer import Tokenizer
 from .transformer import TransformerLM
 from .logger import ExperimentLogger
-from .train_bpe import _pretokenize_parallel # Corrected import for parallel pretokenization
+from .parallel_lm_tokenizer import parallel_tokenize_and_save
 
 
 def pretokenize_data_helper(
@@ -21,45 +21,41 @@ def pretokenize_data_helper(
     output_path: str, 
     use_parallel: bool,
     num_workers: int,
-    special_tokens: list[str]
+    special_tokens: list[str],
+    vocab_path: str,
+    merges_path: str
 ) -> None:
     """
     Pretokenize a text file and save the token IDs as a numpy array.
     Handles parallel processing and logging.
     """
-    print(f"Creating fresh pretokenized data from {input_path}...")
-    start_time = time.time()
-    
-    all_token_ids = []
-
-    if use_parallel:
-        print("Starting parallel pretokenization...")
-        pretoken_freq = _pretokenize_parallel(input_path, special_tokens, num_workers) # Corrected function call
-        print(f"Found {len(pretoken_freq)} unique pretokens")
-        
-        total_pretokens = sum(pretoken_freq.values())
-        print(f"Processing {total_pretokens} total pretokens")
-        
-        with tqdm(total=len(pretoken_freq), desc="Encoding pretokens") as pbar:
-            for pretoken, freq in pretoken_freq.items():
-                # pretoken is a tuple of integers (byte IDs) from _pretokenize_parallel
-                # Convert tuple of ints to bytes object, then decode to string
-                text = bytes(list(pretoken)).decode('utf-8')
-                token_ids = tokenizer.encode(text)
-                all_token_ids.extend(token_ids * freq)
-                pbar.update(1)
+    if use_parallel and num_workers > 1:
+        print(f"Creating fresh pretokenized data from {input_path}...")
+        start_time = time.time()
+        parallel_tokenize_and_save(
+            input_path=input_path,
+            output_path=output_path,
+            vocab_path=vocab_path,
+            merges_path=merges_path,
+            special_tokens=special_tokens,
+            num_workers=num_workers,
+            progress_bar=True
+        )
+        end_time = time.time()
         
     else:
-        print("Using simple sequential pretokenization...")
-        with open(input_path, 'r', encoding='utf-8') as f:
+        print("Using sequential line-by-line pretokenization to preserve text order...")
+        start_time = time.time()
+        all_token_ids = []
+        with open(input_path, encoding='utf-8') as f: # Removed 'r' mode
             for line in tqdm(f, desc=f"Pretokenizing {os.path.basename(input_path)} data"):
                 all_token_ids.extend(tokenizer.encode(line))
-    
-    np.save(output_path, np.array(all_token_ids, dtype=np.int32))
-    
-    end_time = time.time()
-    print(f"Pretokenization completed in {end_time - start_time:.2f} seconds")
-    print(f"Saved {len(all_token_ids)} tokens to {output_path}")
+        
+        np.save(output_path, np.array(all_token_ids, dtype=np.uint16))
+        
+        end_time = time.time()
+        print(f"Pretokenization completed in {end_time - start_time:.2f} seconds")
+        print(f"Saved {len(all_token_ids)} tokens to {output_path}")
 
 def parse_args():
     parser = argparse.ArgumentParser()
@@ -162,7 +158,9 @@ def evaluate(model, valid_data, args, device, n_batches=10):
             target_seq = valid_data[start + 1:start + args.context_length + 1]
             inputs = torch.tensor(input_seq, dtype=torch.long, device=device).unsqueeze(0)
             targets = torch.tensor(target_seq, dtype=torch.long, device=device).unsqueeze(0)
+            
             logits = model(inputs)
+            
             loss = cross_entropy(logits, targets)
             losses.append(loss.item())
     model.train()
@@ -213,7 +211,9 @@ def main(args=None):
             output_path=args.pretokens_train_path,
             use_parallel=args.use_parallel_pretokenize,
             num_workers=args.num_workers,
-            special_tokens=args.special_tokens
+            special_tokens=args.special_tokens,
+            vocab_path=args.vocab_path,
+            merges_path=args.merges_path
         )
 
     # For validation data
@@ -228,7 +228,9 @@ def main(args=None):
             output_path=args.pretokens_valid_path,
             use_parallel=args.use_parallel_pretokenize,
             num_workers=args.num_workers,
-            special_tokens=args.special_tokens
+            special_tokens=args.special_tokens,
+            vocab_path=args.vocab_path,
+            merges_path=args.merges_path
         )
 
     # load data based on the specified method
@@ -404,8 +406,8 @@ def main(args=None):
                 if no_improvement_count >= patience:
                     pbar.write(f"\nEarly stopping at step {step} - no improvement for {patience} evaluations")
                     logger.log_metrics({'early_stop': True, 'reason': f'no_improvement_for_{patience}_evals'}, step=step)
-                break
-    
+                    break # Correctly indented break
+        
         # periodic checkpointing
         if not args.save_best_only and step % args.checkpoint_freq == 0:
             save_path = os.path.join(args.checkpoint_dir, f"checkpoint_{step}.pt")

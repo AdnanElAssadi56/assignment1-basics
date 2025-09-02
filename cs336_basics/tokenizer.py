@@ -1,118 +1,229 @@
 import pickle
-import json
+import logging
+import time
+import multiprocessing
+from collections.abc import Iterable, Iterator
 from tqdm import tqdm
 import regex as re
-from typing import Iterable
+
+# configure logging
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(levelname)s - %(message)s'
+)
 
 class Tokenizer:
-
-    def __init__(self, vocab, merges, special_tokens=None):
-
+    def __init__(self, vocab: dict[int, bytes], merges: list[tuple[bytes, bytes]], special_tokens: list[str] | None = None, max_workers: int = 4):
         self.vocab = vocab
-        self.merges = merges
-
         self.special_tokens = special_tokens or []
-        self.PRETOKENIZE_REGEX = r"""'(?:[sdmt]|ll|ve|re)| ?\p{L}+| ?\p{N}+| ?[^\s\p{L}\p{N}]+|\s+(?!\S)|\s+"""
+        if special_tokens:
+            existing_special_tokens = {}
+            for special in special_tokens:
+                encoded = special.encode("UTF-8")
+                for token_id, token_bytes in self.vocab.items():
+                    if token_bytes == encoded:
+                        existing_special_tokens[special] = token_id
+                        break
+            
+            new_special_tokens = [st for st in special_tokens if st not in existing_special_tokens]
+            if new_special_tokens:
+                # start new special tokens at 50256 to match tiktoken
+                self.vocab.update({max(vocab.keys())+ 1 + i: special.encode("UTF-8") for i, special in enumerate(new_special_tokens)})
+            
+            self.special_tokens = sorted(special_tokens, key=len, reverse=True)
 
-        next_id = max(self.vocab.keys()) + 1 if self.vocab else 0
-        for token in self.special_tokens:
-            token_bytes = token.encode("utf-8")
-            if token_bytes not in self.vocab.values():
-                self.vocab[next_id] = token_bytes
-                next_id += 1
-
-        self.vocab_reverse = {v: k for k, v in self.vocab.items()}
-
-    @classmethod
-    def from_files(cls, vocab_filepath: str, merges_filepath: str, special_tokens=None):
-
-        if vocab_filepath.endswith('.pkl'):
-            with open(vocab_filepath, 'rb') as f:
-                vocab = pickle.load(f)
-        elif vocab_filepath.endswith('.json'):
-            with open(vocab_filepath, 'r', encoding='utf-8') as f:
-                vocab_json = json.load(f)
-                vocab = {int(k): bytes.fromhex(v) for k, v in vocab_json.items()}
-        else:
-            raise ValueError("Vocabulary file must be .pkl or .json")
-
-        if merges_filepath.endswith('.pkl'):
-            with open(merges_filepath, 'rb') as f:
-                merges = pickle.load(f)
-        elif merges_filepath.endswith('.txt'):
-            merges = []
-            with open(merges_filepath, 'r', encoding='utf-8') as f:
-                for line in f:
-                    line = line.strip()
-                    if line:
-                        a_hex, b_hex = line.split()
-                        merges.append((bytes.fromhex(a_hex), bytes.fromhex(b_hex)))
-        else:
-            raise ValueError("Merges file must be .pkl or .txt")
-
-        tokenizer = cls(vocab, merges, special_tokens)
-        return tokenizer
-
-    def encode(self, text) -> list[int] :
-
-        token_ids = []
+        self.merges = merges
+        self.vocab_inverse = {v: k for k, v in self.vocab.items()}
+        self.logger = logging.getLogger(__name__)
+        self.max_workers = min(max_workers, multiprocessing.cpu_count())
+        self.merges_dict = {pair: pair[0] + pair[1] for pair in merges}
+        self.bpe_ranks = {pair: i for i, pair in enumerate(self.merges)}
 
         if self.special_tokens:
-            pattern = "(" + "|".join(
-                re.escape(token) for token in sorted(self.special_tokens, key=len, reverse=True)
-            ) + ")"
-            parts = re.split(pattern, text)
+            # sort special in desc order to ensure longest matches first
+            tok_pat = "|".join(re.escape(st) for st in sorted(self.special_tokens, key=len, reverse=True))
+            tok_pat = f"({tok_pat})|"
         else:
-            parts = [text]
+            tok_pat = ""
+        bpe_pat = r"""'(?:[sdmt]|ll|ve|re)| ?\p{L}+| ?\p{N}+| ?[^\s\p{L}\p{N}]+|\s+(?!\S)|\s+"""
+        self._token_re = re.compile(tok_pat + bpe_pat)
 
-        for part in parts:
-            if part in self.special_tokens:
-                token_ids.append(self.vocab_reverse[part.encode("utf-8")])
-                continue
+        self.logger.info(f"Initialized Tokenizer with max_workers={self.max_workers}")
+        self.logger.info(f"Loaded vocabulary size: {len(self.vocab)}")
+        self.logger.info(f"Loaded special tokens count: {len(self.special_tokens)}")
+    
+    # Removed pretokenize_file method, as it was designed for BPE frequency counting (losing order)
+    # and is not suitable for LM training data preparation. We will rely on parallel_lm_tokenizer.py for ordered tokenization.
 
-            for m in re.finditer(self.PRETOKENIZE_REGEX, part):
-                text_bytes = m.group(0).encode("utf-8")
-                tokens = [text_bytes[i:i+1] for i in range(len(text_bytes))]
+    @staticmethod
+    def get_pairs(word: tuple[bytes, ...]) -> set[tuple[bytes, bytes]]:
+        pairs = set()
+        for i in range(len(word)-1):
+            pairs.add((word[i], word[i+1]))
+        return pairs
 
-                for a, b in self.merges:
-                    i = 0
-                    while i < len(tokens) - 1:
-                        if tokens[i] == a and tokens[i+1] == b:
-                            merged = a + b
-                            tokens[i:i+2] = [merged]
-                        i += 1
+    def apply_bpe(self, byte_seq: list[bytes]) -> list[bytes]:
+        word = tuple(byte_seq)
+        pairs = Tokenizer.get_pairs(word)
+        if not pairs:
+            return list(word)
 
-                
-                for token in tokens:
-                    if token in self.vocab_reverse:
-                        token_ids.append(self.vocab_reverse[token])
-                    # For Safety
-                    else:
-                        for byte in token:
-                            if byte in self.vocab_reverse:
-                                token_ids.append(self.vocab_reverse[byte])
-                            else:
-                                raise ValueError(f"Unknown token: {token}")
-            
-        return token_ids
+        while True:
+            # pick the highest‑priority merge that exists in this word
+            min_pair = None
+            min_rank = None
+            for pair in pairs:
+                rank = self.bpe_ranks.get(pair)
+                if rank is not None and (min_rank is None or rank < min_rank):
+                    min_pair, min_rank = pair, rank
+            if min_pair is None:
+                break
 
-    def encode_iterable(self, iterable: Iterable[str]) -> Iterable[int]:
+            first, second = min_pair
+            new_word = []
+            i = 0
+            while i < len(word):
+                # if first+second occurs here, merge it
+                if i < len(word)-1 and word[i] == first and word[i+1] == second:
+                    new_word.append(first + second)
+                    i += 2
+                else:
+                    new_word.append(word[i])
+                    i += 1
 
-        for text in tqdm(iterable, desc="Streaming encoding"):
-            token_ids = self.encode(text)
-            yield from token_ids
+            word = tuple(new_word)
+            pairs = Tokenizer.get_pairs(word)
 
-    def decode(self, ids: list[int]) -> str:
+        return list(word)
+    
+    def encode(self, text: str) -> list[int]:
+        ids = []
+        if not self.special_tokens:
+            # if no special tokens, just process normally
+            for m in self._token_re.finditer(text):
+                tok = m.group(0)
+                b_list = [bytes([b]) for b in tok.encode("utf-8")]
+                for piece in self.apply_bpe(b_list):
+                    if piece not in self.vocab_inverse:
+                        print(f"Unknown piece: {piece}")
+                    ids.append(self.vocab_inverse[piece])
+            return ids
 
-        bytes_sequence = []
-        for id in ids:
-            if id in self.vocab:
-                bytes_sequence.append(self.vocab[id])
+        # split text by special tokens
+        parts = []
+        current_pos = 0
+        while current_pos < len(text):
+            # find next special token
+            next_special = None
+            next_pos = len(text)
+            for special in self.special_tokens:
+                pos = text.find(special, current_pos)
+                if pos != -1 and pos < next_pos:
+                    next_special = special
+                    next_pos = pos
+
+            if next_special is not None:
+                if next_pos > current_pos:
+                    parts.append((text[current_pos:next_pos], False))
+                parts.append((next_special, True))
+                current_pos = next_pos + len(next_special)
             else:
-                raise ValueError(f"Unknown token ID: {id}")
+                if current_pos < len(text):
+                    parts.append((text[current_pos:], False))
+                break
 
-        full_bytes = b"".join(bytes_sequence)
-        return full_bytes.decode("utf-8", errors="replace")
+        for part, is_special in parts:
+            if is_special:
+                if part.encode("utf-8") not in self.vocab_inverse:
+                    print(f"Unknown special token: {part}")
+                ids.append(self.vocab_inverse[part.encode("utf-8")])
+            else:
+                for m in self._token_re.finditer(part):
+                    tok = m.group(0)
+                    b_list = [bytes([b]) for b in tok.encode("utf-8")]
+                    for piece in self.apply_bpe(b_list):
+                        if piece not in self.vocab_inverse:
+                            print(f"Unknown piece: {piece}")
+                        ids.append(self.vocab_inverse[piece])
+        
+        return ids
+    
+    @classmethod
+    def from_files(cls, vocab_filepath, merges_filepath, special_tokens = None):
+        """constructs and returns tokenizer from serialized vocabulary and merges
+        """
+        logger = logging.getLogger(__name__)
+        logger.info(f"Loading tokenizer from files: {vocab_filepath} and {merges_filepath}")
+        
+        with open(vocab_filepath, 'rb') as f:
+            vocab = pickle.load(f)
+            
+        with open(merges_filepath, 'rb') as f:
+            merges = pickle.load(f)
+            
+        tokenizer = cls(vocab=vocab, merges=merges, special_tokens=special_tokens)
+        logger.info(f"Successfully loaded tokenizer with vocabulary size: {len(vocab)}")
+        return tokenizer
+    
+    def encode_iterable(self, iterable: Iterable[str]) -> Iterator[int]:
+        """convert an iterable of strings to an iterable of token IDs"""
+        self.logger.info("Starting streaming encoding")
+        total_tokens = 0
+        start_time = time.time()
+        
+        for string in tqdm(iterable, desc="Streaming encoding"):
+            tokens = self.encode(string)
+            total_tokens += len(tokens)
+            yield from tokens
+            
+        encoding_time = time.time() - start_time
+        self.logger.info(f"Streaming encoding completed in {encoding_time:.2f} seconds")
+        self.logger.info(f"Processed {total_tokens} total tokens")
+        self.logger.info(f"Average tokens per second: {total_tokens/encoding_time:.2f}")
+    
+    def decode(self, token_ids: list[int]) -> str:
+        """convert token IDs back to text"""
+        self.logger.debug(f"Decoding {len(token_ids)} tokens")
+        
+        tokens = [self.vocab[token_id] for token_id in tqdm(token_ids, desc="Converting IDs to tokens")]
+        
+        decoded_text = b''.join(tokens).decode('utf-8', errors='replace')
+        self.logger.debug(f"Decoded text length: {len(decoded_text)}")
+        return decoded_text
+    
+    def save(self, vocab_path: str, merges_path: str):
+        """save the tokenizer's vocab and merges to disk"""
+        self.logger.info(f"Saving vocabulary to {vocab_path}")
+        start_time = time.time()
+        
+        with open(vocab_path, 'wb') as f:
+            pickle.dump(self.vocab, f)
+        
+        self.logger.info(f"Saving merges to {merges_path}")
+        with open(merges_path, 'wb') as f:
+            pickle.dump(self.merges, f)
+        
+        save_time = time.time() - start_time
+        self.logger.info(f"Save completed in {save_time:.2f} seconds")
+    
+    def load(self, vocab_path: str, merges_path: str):
+        """load the tokenizer's vocabulary and merges from disk"""
+        self.logger.info(f"Loading vocabulary from {vocab_path}")
+        start_time = time.time()
+        
+        with open(vocab_path, 'rb') as f:
+            self.vocab = pickle.load(f)
+        
+        self.logger.info(f"Loading merges from {merges_path}")
+        with open(merges_path, 'rb') as f:
+            self.merges = pickle.load(f)
+        
+        self.vocab_inverse = {v: k for k, v in self.vocab.items()}
+        
+        load_time = time.time() - start_time
+        self.logger.info(f"Load completed in {load_time:.2f} seconds")
+        self.logger.info(f"Loaded vocabulary size: {len(self.vocab)}")
+        self.logger.info(f"Loaded merges count: {len(self.merges)}")
 
 
 
