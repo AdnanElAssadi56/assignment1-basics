@@ -23,6 +23,18 @@ def run_training_loop(args_list, run_name):
         print(f"\n{'='*80}\nExperiment '{run_name}' completed successfully.\n{'='*80}\n")
     return process.returncode
 
+def add_common_flags(experiment_args, args):
+    """Add common flags to experiment arguments."""
+    if args.use_wandb:
+        experiment_args.append("--use_wandb")
+    if args.use_compile:
+        experiment_args.append("--use_compile")
+    if args.use_memmap:
+        experiment_args.append("--use_memmap")
+    if args.reuse_pretokens:
+        experiment_args.append("--reuse_pretokens")
+    return experiment_args
+
 def base_model_tinystories(args):
     """Runs the base model on TinyStories with optimal LR."""
     print("--- Running Base Model on TinyStories ---")
@@ -52,6 +64,8 @@ def base_model_tinystories(args):
         experiment_args.append("--use_compile")
     if args.use_memmap:
         experiment_args.append("--use_memmap")
+    if args.reuse_pretokens:
+        experiment_args.append("--reuse_pretokens")
     
     run_training_loop(experiment_args, "TinyStories_Base_Model")
 
@@ -494,6 +508,7 @@ def parse_args_for_experiments():
     parser.add_argument("--use_wandb", action="store_true", help="Enable Weights & Biases logging")
     parser.add_argument("--use_compile", action="store_true", help="Enable torch.compile()")
     parser.add_argument("--use_memmap", action="store_true", help="Use memory-mapped files for data loading")
+    parser.add_argument("--reuse_pretokens", action="store_true", default=True, help="Reuse existing pretokenized data")
 
 
     # Specific experiment selection
